@@ -1,165 +1,147 @@
-# Reliable UDP File Transfer over SDN
+# Reliable UDP File Transfer with SDN Dynamic Rerouting
 
-## 1. Project Overview
+A Python UDP file-transfer application with application-level reliability and an OS-Ken/OpenFlow 1.3 controller. The Mininet diamond topology has two paths between the sender and receiver. The controller installs IPv4/UDP forwarding rules, monitors flow counters, and recalculates routes when a link goes down or recovers.
 
-This project implements a reliable file-transfer application using UDP sockets and an SDN-controlled network.
+## What is implemented
 
-A UDP client sends a file from Mininet host h1 to a UDP server running on h2. An OpenFlow 1.3 switch forwards traffic under the control of an OS-Ken SDN controller.
+- UDP socket client and server; the receiver maintains independent sessions keyed by sender address and 128-bit session ID, so multiple transfers can be active without sharing reassembly state.
+- 32-packet sliding window, sequence numbers, cumulative ACKs, per-packet timeout and selective retransmission of expired outstanding packets.
+- CRC32 packet validation and final SHA-256/size verification before atomically committing the received file.
+- Receiver-side out-of-order buffering, duplicate suppression, duplicate re-ACKs, idle-session cleanup, and counters/logging for duplicates and out-of-order datagrams.
+- OpenFlow 1.3 shortest-path selection over the included diamond, port-status-driven rerouting and recovery, periodic flow-statistics polling, and safer IPv4-only flow replacement. The table-miss rule is preserved; unmatched traffic is dropped rather than flooded.
+- Optional application-to-controller UDP telemetry on port 9999: the sender reports retransmission stalls and requests current path status. This requires a management IP for the controller reachable from the Mininet host; see below.
+- Automated protocol and loopback end-to-end tests, plus a repeatable transport benchmark that exports CSV and a graph.
 
-## 2. Architecture
+## Architecture and protocol
 
-```mermaid
-flowchart LR
-    A["h1<br/>UDP Client<br/>10.0.0.1"] --> S["s1<br/>OpenFlow 1.3 Switch"]
-    S --> B["h2<br/>UDP Server<br/>10.0.0.2"]
-    C["OS-Ken SDN Controller"] <-->|"OpenFlow 1.3"| S
-```
+`client.py` reads the source file, splits it into 1000-byte DATA payloads, and sends within a bounded window. The server acknowledges the next expected sequence number. The receiver buffers out-of-order data and discards already-delivered duplicates. The sender retransmits only expired outstanding packets, not the entire window. Therefore, the accurate description is **selective retransmission with cumulative ACKs** (a Selective-Repeat-style receiver/sender hybrid), not Go-Back-N. FIN carries the expected byte count and SHA-256 digest; DONE is sent only after validation and file commit.
 
-## 3. Technologies Used
+`topology.py` creates h1—s1—(s2/s3)—s4—h2. The controller computes a shortest available path between s1 and s4. The current demonstration has one sender/receiver host pair; the server supports multiple independent client sessions, but the included controller/topology host attachment is intentionally fixed to that pair.
 
-- Python 3
-- UDP socket programming
-- Mininet
-- Open vSwitch
-- OpenFlow 1.3
-- OS-Ken SDN controller
-- SHA-256 file integrity verification
+## Environment setup
 
-## 4. Project Structure
-
-```text
-udp-reliable-transfer/
-├── client.py
-├── server.py
-├── controller.py
-├── sample.txt
-├── received_files/
-├── evidence/
-│   └── flow-table.txt
-├── .venv-controller/
-└── README.md
-```
-
-## 5. Application Design
-
-### UDP Client
-- Reads the selected file.
-- Sends file metadata to the server.
-- Divides the file into chunks.
-- Uses sequence numbers and acknowledgements.
-- Retransmits packets when acknowledgements time out.
-- Sends a final SHA-256 digest.
-
-### UDP Server
-- Listens for incoming file transfers.
-- Receives and acknowledges data packets.
-- Reassembles the file.
-- Verifies the SHA-256 digest.
-- Saves the received file.
-
-### SDN Controller
-- Uses OpenFlow 1.3.
-- Learns source MAC addresses.
-- Installs forwarding rules dynamically.
-- Sends unknown traffic to the controller for processing.
-
-## 6. Network Topology
-
-| Component | Configuration |
-|---|---|
-| Controller | OS-Ken |
-| Switch | s1 (Open vSwitch) |
-| Protocol | OpenFlow 1.3 |
-| Client host | h1 |
-| Client IP | 10.0.0.1 |
-| Server host | h2 |
-| Server IP | 10.0.0.2 |
-| UDP port | 5001 |
-
-## 7. Execution Instructions
-
-Run commands in separate terminal windows.
-
-### Terminal 1: Start the SDN controller
+Use an Ubuntu VM/native Ubuntu host. Mininet and Open vSwitch require Linux network namespaces.
 
 ```bash
-cd ~/udp-reliable-transfer
-source .venv-controller/bin/activate
+sudo apt update
+sudo apt install -y mininet openvswitch-switch python3-venv python3-pip iproute2
+sudo systemctl enable --now openvswitch-switch
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo mn --test pingall
+```
+
+## Run
+
+Terminal 1, controller:
+
+```bash
+source .venv/bin/activate
 osken-manager controller.py --ofp-tcp-listen-port 6653
 ```
 
-### Terminal 2: Start Mininet
+Terminal 2, Mininet:
 
 ```bash
-sudo mn --topo single,2 --mac \
---switch ovsk,protocols=OpenFlow13 \
---controller remote,ip=127.0.0.1,port=6653
+sudo -E python3 topology.py
 ```
 
-### Terminal 2: Start UDP server inside h2
-
-At the Mininet prompt:
+At the Mininet CLI, run the server in the background so the CLI remains usable:
 
 ```text
-h2 python3 /home/dushyanth/udp-reliable-transfer/server.py
+mininet> h2 python3 server.py &
+mininet> h1 python3 client.py sample.txt 10.0.0.2
 ```
 
-### Terminal 3: Send a file from h1
+For a larger transfer, create a file on h1 and send it:
 
-Find the h1 process ID:
+```text
+mininet> h1 dd if=/dev/urandom of=/tmp/large.bin bs=1M count=20
+mininet> h1 python3 client.py /tmp/large.bin 10.0.0.2
+```
+
+Files are saved in the receiver process's `received_files/` directory. Use absolute script paths if the Mininet host's working directory is not the project directory.
+
+## Dynamic SDN and challenging scenarios
+
+### Link failure and recovery
+
+Start a large transfer, then:
+
+```text
+mininet> link s1 s2 down
+```
+
+The controller should log the port-down event, new path `s1-s3-s4`, and installed routes. The client timeout/retransmission mechanism recovers datagrams lost during convergence. Restore the link:
+
+```text
+mininet> link s1 s2 up
+```
+
+### Packet loss
+
+```text
+mininet> h1 tc qdisc add dev h1-eth0 root netem loss 5%
+mininet> h1 python3 client.py /tmp/large.bin 10.0.0.2
+mininet> h1 tc qdisc del dev h1-eth0 root
+```
+
+Inspect client retransmission totals and server duplicate/out-of-order counters. Always remove `netem` after the experiment.
+
+### Flow monitoring and safe forwarding
+
+Every five seconds the controller requests OpenFlow flow statistics and logs packet/byte totals. Route refresh deletes only IPv4 flow entries; the priority-zero table-miss entry remains. The packet-in handler intentionally drops unmatched traffic (except LLDP handling) to avoid flooding loops and duplicate application traffic in the diamond.
+
+### Socket–SDN application telemetry
+
+The controller listens for JSON telemetry on UDP port 9999. If a management interface/IP is configured and reachable from h1, start a transfer with:
+
+```text
+mininet> h1 python3 client.py /tmp/large.bin 10.0.0.2 --sdn-controller <CONTROLLER_MANAGEMENT_IP>
+```
+
+On retransmission timeout, the client sends a `transfer_stall` event and asks for `status`; the controller responds with active path and down ports. The telemetry listener binds to `0.0.0.0:9999` in the controller process. The management network must be configured by the operator; it is not the OpenFlow TCP connection and is not automatically routable from Mininet namespaces. Without it, file transfer continues normally and the client reports telemetry unavailable.
+
+## Testing
 
 ```bash
-pgrep -af mininet:
+./run_tests.sh
 ```
 
-Use the PID shown for `mininet:h1`:
+The suite compiles the Python modules, tests packet encoding/checksum rejection, and launches a real loopback UDP server/client to verify end-to-end file integrity and retransmission reporting.
+
+## Performance evaluation
+
+### Automated transport benchmark
 
 ```bash
-sudo mnexec -a H1_PID python3 \
-/home/dushyanth/udp-reliable-transfer/client.py \
-/home/dushyanth/udp-reliable-transfer/sample.txt 10.0.0.2
+python3 experiments/benchmark.py --size-mib 2 --trials 3
 ```
 
-Replace `H1_PID` with the actual process ID.
+This compares a simple stop-and-wait UDP baseline with the reliable windowed UDP protocol on localhost. It writes `evidence/benchmark.csv` and, if matplotlib is installed, `evidence/benchmark.png`. These are transport-layer localhost measurements, not Mininet SDN failover results. Re-run on the project VM for your own machine's measurements.
 
-## 8. Testing and Results
+### Mininet static-path vs failover comparison
 
-| Test | Expected result | Observed result |
-|---|---|---|
-| Mininet pingall | Hosts communicate | 0% packet loss |
-| h1 to h2 ping | Successful connectivity | 3/3 packets received |
-| UDP file transfer | File received successfully | Successful |
-| File integrity | Matching SHA-256 | Matching hashes |
-| File comparison | Identical files | cmp returned 0 |
-| OpenFlow flow inspection | Forwarding rules present | Rules observed on s1 |
+Follow `experiments/mininet_failover.md` for a three-trial experiment that compares a forced single-path static baseline with active SDN failover, and records duration, throughput, retransmissions, recovery interval, and SHA-256 correctness. The actual failover table is intentionally left blank until measurements are taken in a running Mininet/OS-Ken environment; no simulated values are presented as experimental evidence.
 
-### File Transfer Result
+Save terminal logs, controller logs, and `ovs-ofctl -O OpenFlow13 dump-flows s1` output under `evidence/`.
 
-- File: sample.txt
-- File size: 60 bytes
-- Transfer status: Successful
-- SHA-256:
+## Project structure
 
 ```text
-414bea518a32720c5fb43364cb3f2a4d1e5509c83598bb03088c49d7ec826b14
+client.py, server.py, protocol.py       UDP transfer and packet protocol
+controller.py                           OS-Ken OpenFlow 1.3 controller
+ topology.py                             Mininet diamond topology
+ tests/                                  protocol + end-to-end integration tests
+ experiments/benchmark.py                CSV/PNG transport benchmark
+ experiments/mininet_failover.md         real SDN failover experiment procedure
+ evidence/                               generated benchmark data and graph
 ```
 
-### OpenFlow Evidence
+## Limitations and viva preparation
 
-The switch flow-table output is saved in:
-
-```text
-evidence/flow-table.txt
-```
-
-It contains controller-installed forwarding rules and packet counters.
-
-## 9. Limitations and Future Work
-
-- Current implementation uses Stop-and-Wait ARQ.
-- Extensive packet-loss and congestion testing remains to be performed.
-- Future improvements can include sliding-window transmission, dynamic SDN routing and performance evaluation.
-
-## 10. Conclusion
-
-The project demonstrates reliable file transfer using UDP sockets over a Mininet network controlled by an OS-Ken SDN controller through OpenFlow 1.3. Successful file delivery and matching SHA-256 hashes verify the basic end-to-end operation.
+- The topology's host pair and switch/port map are fixed for this demonstration. Multi-session transfer is supported at the server, but adding more host pairs requires extending controller host attachment/flow rules and topology.
+- Telemetry requires a separately reachable management IP; OpenFlow control connectivity alone does not make UDP/9999 reachable from Mininet hosts.
+- This is an educational reliable-UDP protocol, not TCP replacement or production congestion control. CRC32 detects accidental packet corruption; SHA-256 checks the completed file. The protocol does not provide encryption or peer authentication.
+- Be ready to explain sequence numbers, cumulative ACK semantics, receiver buffering, duplicate suppression, selective retransmission, timeout trade-offs, flow matches/priorities, OpenFlow port-status events, flow-stat polling, shortest-path recomputation, and failover convergence.

@@ -1,0 +1,3 @@
+trial,mode,size_bytes,seconds,mbps,retransmissions,sha256
+1,stop_and_wait_baseline,1048576,0.02183,384.2614,n/a,d3332f60d43c342cac1f6c43403438edf0df4cdd224c7e8d1fce18335f9fb2a5
+1,reliable_udp_windowed,1048576,0.008638,971.1285,0,d3332f60d43c342cac1f6c43403438edf0df4cdd224c7e8d1fce18335f9fb2a5
