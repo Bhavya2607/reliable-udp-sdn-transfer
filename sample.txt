@@ -1,1 +1,2 @@
-Hello! This is my first UDP reliable file transfer project.
+Reliable UDP file transfer over an SDN-controlled Mininet network.
+This file is a small test payload. Use a larger file to evaluate throughput and recovery.
