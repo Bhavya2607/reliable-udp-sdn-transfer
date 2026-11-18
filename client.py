@@ -1,119 +1,137 @@
-
-import socket
-import os
-import sys
-import json
+import argparse
 import hashlib
+import os
+import secrets
+import socket
+import sys
 import time
+from protocol import ACK, CHUNK_SIZE, DATA, DONE, ERROR, FIN, MAX_RETRIES, READY, START, TIMEOUT, WINDOW_SIZE, decode, encode
 
-SERVER_IP = sys.argv[2] if len(sys.argv) == 3 else "127.0.0.1"
-SERVER_PORT = 5001
 
-CHUNK_SIZE = 1200
-TIMEOUT = 1.0
-MAX_RETRIES = 10
+def transfer(path, host, port, sdn_controller=None):
+    size = os.path.getsize(path)
+    name = os.path.basename(path).encode('utf-8')
+    session = secrets.token_bytes(16)
+    with open(path, 'rb') as f:
+        content = f.read()
+    chunks = [content[i:i + CHUNK_SIZE] for i in range(0, len(content), CHUNK_SIZE)]
+    digest = hashlib.sha256(content).digest()
+    addr = (host, port)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(TIMEOUT)
+    start_payload = len(name).to_bytes(2, 'big') + size.to_bytes(8, 'big') + name
+    start_packet = encode(START, session, len(chunks), start_payload)
+    try:
+        for attempt in range(MAX_RETRIES):
+            sock.sendto(start_packet, addr)
+            try:
+                reply, _ = sock.recvfrom(2048)
+                msg = decode(reply)
+                if msg and msg[0] == READY and msg[1] == session:
+                    break
+            except socket.timeout:
+                pass
+        else:
+            raise RuntimeError('Server did not acknowledge transfer setup')
 
-if len(sys.argv) not in (2, 3):
-    print("Usage: python3 client.py <filename> [server_ip]")
-    sys.exit(1)
+        base = 0
+        next_seq = 0
+        outstanding = {}
+        retries = 0
+        total_packets_sent = len(chunks)
+        retransmissions = 0
+        started = time.monotonic()
+        control = None
+        if sdn_controller:
+            control = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            control.settimeout(0.25)
+            control_addr = (sdn_controller, 9999)
+        while base < len(chunks):
+            while next_seq < len(chunks) and next_seq < base + WINDOW_SIZE:
+                packet = encode(DATA, session, next_seq, chunks[next_seq])
+                sock.sendto(packet, addr)
+                outstanding[next_seq] = (packet, time.monotonic(), 0)
+                next_seq += 1
+            try:
+                reply, _ = sock.recvfrom(2048)
+                msg = decode(reply)
+                if not msg or msg[1] != session:
+                    continue
+                kind, _, ack_next, _ = msg
+                if kind == ERROR:
+                    raise RuntimeError('Server rejected a packet')
+                if kind == ACK:
+                    if base <= ack_next <= next_seq:
+                        for seq in range(base, ack_next):
+                            outstanding.pop(seq, None)
+                        base = ack_next
+                        retries = 0
+            except socket.timeout:
+                now = time.monotonic()
+                expired = [seq for seq, (_, sent, _) in outstanding.items() if now - sent >= TIMEOUT]
+                if not expired:
+                    continue
+                for seq in expired:
+                    packet, _, count = outstanding[seq]
+                    if count >= MAX_RETRIES:
+                        raise RuntimeError(f'Maximum retransmissions reached for packet {seq}')
+                    sock.sendto(packet, addr)
+                    outstanding[seq] = (packet, now, count + 1)
+                    retries += 1
+                    retransmissions += 1
+                    total_packets_sent += 1
+                if control:
+                    try:
+                        import json
+                        control.sendto(json.dumps({'event': 'transfer_stall', 'session': session.hex(), 'base': base, 'expired': expired, 'timestamp': time.time()}).encode(), control_addr)
+                        control.sendto(b'{"event":"status"}', control_addr)
+                        status, _ = control.recvfrom(2048)
+                        print('SDN status:', status.decode(errors='replace'))
+                    except (OSError, socket.timeout):
+                        print('SDN telemetry unavailable; continuing UDP recovery')
+                print(f'Retransmitting {len(expired)} packet(s); cumulative ACK={base}')
 
-filename = sys.argv[1]
+        fin_packet = encode(FIN, session, len(chunks), size.to_bytes(8, 'big') + digest)
+        for _ in range(MAX_RETRIES):
+            sock.sendto(fin_packet, addr)
+            try:
+                reply, _ = sock.recvfrom(2048)
+                msg = decode(reply)
+                if msg and msg[1] == session and msg[0] == DONE:
+                    elapsed = time.monotonic() - started
+                    print(f'Transfer successful: {size} bytes in {elapsed:.3f}s')
+                    print(f'SHA-256: {digest.hex()}')
+                    throughput = (size * 8 / elapsed / 1_000_000) if elapsed else 0
+                    print(f'Approx. throughput: {throughput:.3f} Mbps')
+                    print(f'Total DATA transmissions: {total_packets_sent}; retransmissions: {retransmissions}')
+                    print(f'Packets acknowledged cumulatively: {len(chunks)}')
+                    print(f'Elapsed seconds: {elapsed:.6f}')
+                    return
+                if msg and msg[0] == ERROR:
+                    raise RuntimeError('Server integrity check failed')
+            except socket.timeout:
+                continue
+        raise RuntimeError('Server did not confirm transfer completion')
+    finally:
+        sock.close()
+        if 'control' in locals() and control:
+            control.close()
 
-if not os.path.isfile(filename):
-    print("File not found!")
-    sys.exit(1)
 
-filesize = os.path.getsize(filename)
+def main():
+    parser = argparse.ArgumentParser(description='Reliable UDP file sender (selective retransmission with cumulative ACKs)')
+    parser.add_argument('file')
+    parser.add_argument('server_ip')
+    parser.add_argument('--port', type=int, default=5001)
+    parser.add_argument('--sdn-controller', help='Reachable management IP of controller telemetry listener (UDP/9999)')
+    args = parser.parse_args()
+    if not os.path.isfile(args.file):
+        parser.error('Input file does not exist')
+    try:
+        transfer(args.file, args.server_ip, args.port, args.sdn_controller)
+    except (OSError, RuntimeError) as exc:
+        print(f'Transfer failed: {exc}', file=sys.stderr)
+        raise SystemExit(1)
 
-client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-client.settimeout(TIMEOUT)
-
-server_address = (SERVER_IP, SERVER_PORT)
-
-metadata = {
-    "type": "START",
-    "filename": os.path.basename(filename),
-    "filesize": filesize
-}
-
-metadata_packet = json.dumps(metadata).encode()
-
-def receive_ready():
-    for attempt in range(MAX_RETRIES):
-        client.sendto(metadata_packet, server_address)
-
-        try:
-            response, _ = client.recvfrom(4096)
-            if response == b"READY":
-                return True
-        except socket.timeout:
-            print("Waiting for server... retrying")
-
-    return False
-
-def send_packet(packet, expected_ack):
-    for attempt in range(MAX_RETRIES):
-        client.sendto(packet, server_address)
-
-        try:
-            response, _ = client.recvfrom(4096)
-
-            if response == expected_ack:
-                return True
-
-        except socket.timeout:
-            print(f"Timeout: retransmitting packet {expected_ack[1:]}")
-
-    return False
-
-print(f"Sending file: {filename}")
-print(f"File size: {filesize} bytes")
-
-try:
-    if not receive_ready():
-        print("Server did not respond.")
-        sys.exit(1)
-
-    print("Server is ready. Starting transfer...")
-
-    sent = 0
-    sequence = 0
-    file_hash = hashlib.sha256()
-
-    with open(filename, "rb") as file:
-        while True:
-            data = file.read(CHUNK_SIZE)
-
-            if not data:
-                break
-
-            file_hash.update(data)
-
-            packet = b"D" + sequence.to_bytes(4, "big") + data
-            expected_ack = b"A" + sequence.to_bytes(4, "big")
-
-            if not send_packet(packet, expected_ack):
-                print(f"Failed to transfer packet {sequence}")
-                sys.exit(1)
-
-            sent += len(data)
-            sequence += 1
-
-            print(f"\rTransferred {sent}/{filesize} bytes", end="")
-
-    finish_packet = (
-        b"F" +
-        sequence.to_bytes(4, "big") +
-        file_hash.digest()
-    )
-
-    if not send_packet(finish_packet, b"OK"):
-        print("\nServer did not confirm file completion.")
-        sys.exit(1)
-
-    print("\nTransfer completed successfully!")
-    print(f"Total bytes sent: {sent}")
-    print(f"SHA-256: {file_hash.hexdigest()}")
-
-finally:
-    client.close()
+if __name__ == '__main__':
+    main()
