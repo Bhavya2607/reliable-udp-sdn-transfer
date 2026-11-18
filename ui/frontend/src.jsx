@@ -17,9 +17,10 @@ function App(){
  async function post(url,body){const r=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok){setError(d.detail||'Request failed');return}setError('');}
  const exp=experiments.find(x=>x.id===experiment),ctl=status.controller||{},active=ctl.active_path||[];
  const packets=events.filter(e=>e.type==='data_sent'),acks=events.filter(e=>e.type==='ack_received'),retries=events.filter(e=>e.type==='retransmit');
- const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets||lastPacket?.total||0,base=lastAck?.ack??0;
- const count=events.filter(e=>e.type==='transfer_completed').length;
- const pathActive=(a,b)=>ctl.reachable&&active.includes(a)&&active.includes(b);
+ const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets??lastPacket?.total??0,base=events.filter(e=>e.type==='ack_received').at(-1)?.ack??0;
+ 
+ const pathActive=(a,b)=>ctl.reachable&&active.includes(Number(a.slice(1)))&&active.includes(Number(b.slice(1)));
+ const coords={1:[245,150],2:[430,70],3:[430,230],4:[620,150]}; const routePoints=active.length?[[90,150],...active.map(n=>coords[n]),[800,150]]:[[90,150],[245,150],[430,70],[620,150],[800,150]]; const routeD=routePoints.map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' '); const reverseD=[...routePoints].reverse().map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' ');
  const node=(id,x,y,label,sub)=> <g key={id} transform={'translate('+x+' '+y+')'}><rect x="-43" y="-24" width="86" height="48" rx="9" className={id[0]==='h'?'host':'sw'}/><text y="-2" textAnchor="middle" className="nt">{label}</text><text y="12" textAnchor="middle" className="ns">{sub}</text></g>;
  const link=(a,b,x1,y1,x2,y2)=>{const hot=pathActive(a,b);return <g key={a+b}><line x1={x1} y1={y1} x2={x2} y2={y2} className={'edge '+(hot?'hot':'')}/>{hot&&<circle r="5" className="moving"><animateMotion dur="1.6s" repeatCount="indefinite" path={'M'+x1+','+y1+' L'+x2+','+y2}/></circle>}</g>};
  const copy=async text=>{await navigator.clipboard.writeText(text);setCopied(text);setTimeout(()=>setCopied(''),1500)};
@@ -31,8 +32,8 @@ function App(){
  <div className="diagram"><svg viewBox="0 0 900 300" aria-label="Four switch diamond network">
  {link('h1','s1',90,150,245,150)}{link('s1','s2',245,150,430,70)}{link('s1','s3',245,150,430,230)}{link('s2','s4',430,70,620,150)}{link('s3','s4',430,230,620,150)}{link('s4','h2',620,150,800,150)}
  {node('h1',90,150,'SENDER','H1 · 10.0.0.1')}{node('s1',245,150,'S1','switch 1')}{node('s2',430,70,'S2','primary path')}{node('s3',430,230,'S3','backup path')}{node('s4',620,150,'S4','switch 4')}{node('h2',800,150,'RECEIVER','H2 · 10.0.0.2')}
- {lastPacket&&<circle r="7" className="dataDot"><animateMotion dur="1.1s" repeatCount="1" path="M90,150 L245,150 L430,70 L620,150 L800,150"/></circle>}
- {lastAck&&<circle r="7" className="ackDot"><animateMotion dur="1.1s" repeatCount="1" path="M800,150 L620,150 L430,70 L245,150 L90,150"/></circle>}
+ {lastPacket&&<circle key={'data-'+events.length} r="7" className="dataDot"><animateMotion dur="1.1s" repeatCount="1" path={routeD}/></circle>}
+ {lastAck&&<circle key={'ack-'+events.length} r="7" className="ackDot"><animateMotion dur="1.1s" repeatCount="1" path={reverseD}/></circle>}
  </svg></div>
  <div className="legend"><span><i className="dataKey"/> DATA →</span><span><i className="ackKey"/> ← ACK</span><span><i className="routeKey"/> Controller active route</span><span className="routeText">{ctl.reachable?'Active path: '+(active.join(' → ')||'No path'):'Waiting for controller status'}</span></div>
  </section>
@@ -46,7 +47,7 @@ function App(){
  <article className="panel"><div className="sectionTitle"><div><b>3. Transfer progress</b><p>Live values from sender events</p></div><Activity/></div>
  <div className="progress"><div className="progressText"><b>{base} / {total||'—'}</b><span>Packets cumulatively acknowledged</span></div><div className="bar"><i style={{width:(total?Math.min(100,base/total*100):0)+'%'}}/></div></div>
  <div className="stats"><div><b>{packets.length}</b><small>DATA sent</small></div><div><b>{acks.length}</b><small>ACK received</small></div><div><b>{retries.length}</b><small>Retransmits</small></div></div>
- <div className="packetNow"><div><ArrowUp/><span>Last DATA</span><b>{lastPacket?'seq '+lastPacket.seq:'—'}</b></div><div><ArrowDown/><span>Last ACK</span><b>{lastAck?'ACK '+(lastAck.ack??lastAck.ack):'—'}</b></div></div>
+ <div className="packetNow"><div><ArrowUp/><span>Last DATA</span><b>{lastPacket?'seq '+lastPacket.seq:'—'}</b></div><div><ArrowDown/><span>Last ACK</span><b>{lastAck?'ACK '+(events.filter(e=>e.type==='ack_received').at(-1)?.ack??lastAck.ack):'—'}</b></div></div>
  </article></section>
  <section className="panel packets"><div className="sectionTitle"><div><b>4. Sliding window & packet timeline</b><p>Watch sequence numbers move through the sender window</p></div><span className="smalltag">WINDOW SIZE · 32</span></div>
  <div className="windowInfo"><span>Base = <b>{base}</b></span><span>Next DATA = <b>{lastPacket?lastPacket.seq+1:0}</b></span><span>Window end = <b>{Math.min(base+31,total?total-1:31)}</b></span></div>
