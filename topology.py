@@ -3,6 +3,7 @@ from mininet.net import Mininet
 from mininet.node import RemoteController, OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
+from mininet_api import start_api
 
 
 class ReliableUDPTopo(Topo):
@@ -26,6 +27,7 @@ def run():
     net = Mininet(topo=topo, controller=None, switch=OVSSwitch, autoSetMacs=False, build=True)
     net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6653)
     net.start()
+    start_api(net, host='0.0.0.0', port=8765)
     info('\n*** Network ready. Initial path should be s1-s2-s4.\n')
     info('*** Start receiver in background: h2 python3 server.py &\n')
     info('*** In another CLI command: h1 python3 client.py sample.txt 10.0.0.2\n')
