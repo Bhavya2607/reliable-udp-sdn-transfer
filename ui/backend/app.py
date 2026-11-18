@@ -16,7 +16,12 @@ async def publish(event):
 def reader(proc,source):
     for line in iter(proc.stdout.readline,''):
         line=line.strip()
-        if line: asyncio.run_coroutine_threadsafe(publish({'type':'log','source':source,'message':line}),app.state.loop)
+        if line:
+            event={'type':'log','source':source,'message':line}
+            if line.startswith('EVENT '):
+                try: event=json.loads(line[6:]); event['source']=source
+                except json.JSONDecodeError: pass
+            asyncio.run_coroutine_threadsafe(publish(event),app.state.loop)
     code=proc.wait(); asyncio.run_coroutine_threadsafe(publish({'type':'process_exit','source':source,'code':code}),app.state.loop)
     if source=='sender': state['transfer']='completed' if code==0 else 'failed'
 @app.on_event('startup')
