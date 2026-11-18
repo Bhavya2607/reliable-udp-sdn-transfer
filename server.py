@@ -68,7 +68,6 @@ def main():
                     counters['duplicate_packets'] += 1
                     print(f'Duplicate DATA seq={seq}; cumulative ACK={state["next"]}')
                     sock.sendto(encode(ACK, sid, state['next']), addr)
-                emit_event('ack_sent', ack=state['next'], duplicate=False, total=state['total'])
                     emit_event('ack_sent', ack=state['next'], duplicate=True, total=state['total'])
                     continue
                 if seq >= state['total'] or len(payload) > 1000:
@@ -89,6 +88,7 @@ def main():
                     state['data'].extend(chunk)
                     state['next'] += 1
                 sock.sendto(encode(ACK, sid, state['next']), addr)
+                emit_event('ack_sent', ack=state['next'], duplicate=False, total=state['total'])
             elif kind == FIN:
                 if len(payload) != 40 or seq != state['total']:
                     sock.sendto(encode(ERROR, sid), addr)
