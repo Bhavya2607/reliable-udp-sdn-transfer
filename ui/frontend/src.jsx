@@ -20,7 +20,7 @@ function App(){
  const packets=events.filter(e=>e.type==='data_sent'),acks=events.filter(e=>e.type==='ack_received'),retries=events.filter(e=>e.type==='retransmit');
  const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets??lastPacket?.total??0,base=events.filter(e=>e.type==='ack_received').at(-1)?.ack??0;
  
- const pathActive=(a,b)=>ctl.reachable&&active.includes(Number(a.slice(1)))&&active.includes(Number(b.slice(1)));
+ const switchId=(node)=>node==='h1'?1:node==='h2'?4:Number(node.slice(1)); const pathActive=(a,b)=>ctl.reachable&&active.includes(switchId(a))&&active.includes(switchId(b));
  const coords={1:[245,150],2:[430,70],3:[430,230],4:[620,150]}; const routePoints=active.length?[[90,150],...active.map(n=>coords[n]),[800,150]]:[[90,150],[245,150],[430,70],[620,150],[800,150]]; const routeD=routePoints.map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' '); const reverseD=[...routePoints].reverse().map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' ');
  const node=(id,x,y,label,sub)=> <g key={id} transform={'translate('+x+' '+y+')'}><rect x="-43" y="-24" width="86" height="48" rx="9" className={id[0]==='h'?'host':'sw'}/><text y="-2" textAnchor="middle" className="nt">{label}</text><text y="12" textAnchor="middle" className="ns">{sub}</text></g>;
  const link=(a,b,x1,y1,x2,y2)=>{const hot=pathActive(a,b);return <g key={a+b}><line x1={x1} y1={y1} x2={x2} y2={y2} className={'edge '+(hot?'hot':'')}/>{hot&&<circle r="5" className="moving"><animateMotion dur="1.6s" repeatCount="indefinite" path={'M'+x1+','+y1+' L'+x2+','+y2}/></circle>}</g>};
