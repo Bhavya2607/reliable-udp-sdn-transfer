@@ -1,9 +1,14 @@
 import argparse
 import hashlib
 import os
+import json
 import socket
 import time
 from protocol import ACK, DATA, DONE, ERROR, FIN, READY, START, decode, encode
+
+
+def emit_event(event, **fields):
+    print('EVENT ' + json.dumps({'type': event, **fields}), flush=True)
 
 
 def main():
@@ -48,6 +53,7 @@ def main():
                     temp = os.path.join(args.output, f'.{sid.hex()}.part')
                     sessions[key] = {'name': name, 'size': size, 'total': seq, 'next': 0, 'buffer': {}, 'data': bytearray(), 'temp': temp, 'last': time.monotonic()}
                 sock.sendto(encode(READY, sid), addr)
+                emit_event('receiver_ready', filename=name, total_packets=seq, peer=str(addr))
                 continue
             state = sessions.get(key)
             if state is None:
@@ -57,10 +63,12 @@ def main():
             state['last'] = time.monotonic()
             if kind == DATA:
                 counters['received_data'] += 1
+                emit_event('data_received', seq=seq, expected=state['next'], total=state['total'], peer=str(addr))
                 if seq < state['next']:
                     counters['duplicate_packets'] += 1
                     print(f'Duplicate DATA seq={seq}; cumulative ACK={state["next"]}')
                     sock.sendto(encode(ACK, sid, state['next']), addr)
+                    emit_event('ack_sent', ack=state['next'], duplicate=True, total=state['total'])
                     continue
                 if seq >= state['total'] or len(payload) > 1000:
                     sock.sendto(encode(ERROR, sid), addr)
@@ -80,6 +88,7 @@ def main():
                     state['data'].extend(chunk)
                     state['next'] += 1
                 sock.sendto(encode(ACK, sid, state['next']), addr)
+                emit_event('ack_sent', ack=state['next'], duplicate=False, total=state['total'])
             elif kind == FIN:
                 if len(payload) != 40 or seq != state['total']:
                     sock.sendto(encode(ERROR, sid), addr)
@@ -102,6 +111,7 @@ def main():
                 counters['completed_transfers'] += 1
                 print('Receiver counters:', counters)
                 sock.sendto(encode(DONE, sid, seq), addr)
+                emit_event('integrity_verified', filename=state['name'], size=len(data), sha256=expected_hash.hex(), status='PASS')
                 print(f'Received {state["name"]}: {len(data)} bytes; SHA-256 {expected_hash.hex()}')
             now = time.monotonic()
             for old_key, old_state in list(sessions.items()):

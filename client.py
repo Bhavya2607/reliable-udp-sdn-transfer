@@ -1,11 +1,16 @@
 import argparse
 import hashlib
+import json
 import os
 import secrets
 import socket
 import sys
 import time
 from protocol import ACK, CHUNK_SIZE, DATA, DONE, ERROR, FIN, MAX_RETRIES, READY, START, TIMEOUT, WINDOW_SIZE, decode, encode
+
+
+def emit_event(event, **fields):
+    print('EVENT ' + json.dumps({'type': event, **fields}), flush=True)
 
 
 def transfer(path, host, port, sdn_controller=None):
@@ -39,6 +44,7 @@ def transfer(path, host, port, sdn_controller=None):
         outstanding = {}
         retries = 0
         total_packets_sent = len(chunks)
+        emit_event('transfer_started', filename=os.path.basename(path), size=size, total_packets=len(chunks), chunk_size=CHUNK_SIZE, window_size=WINDOW_SIZE)
         retransmissions = 0
         started = time.monotonic()
         control = None
@@ -51,6 +57,7 @@ def transfer(path, host, port, sdn_controller=None):
                 packet = encode(DATA, session, next_seq, chunks[next_seq])
                 sock.sendto(packet, addr)
                 outstanding[next_seq] = (packet, time.monotonic(), 0)
+                emit_event('data_sent', seq=next_seq, base=base, window_end=min(base + WINDOW_SIZE - 1, len(chunks) - 1), total=len(chunks), retransmission=False)
                 next_seq += 1
             try:
                 reply, _ = sock.recvfrom(2048)
@@ -64,7 +71,9 @@ def transfer(path, host, port, sdn_controller=None):
                     if base <= ack_next <= next_seq:
                         for seq in range(base, ack_next):
                             outstanding.pop(seq, None)
+                        old_base = base
                         base = ack_next
+                        emit_event('ack_received', ack=ack_next, previous_base=old_base, base=base, outstanding=len(outstanding), total=len(chunks))
                         retries = 0
             except socket.timeout:
                 now = time.monotonic()
@@ -77,6 +86,7 @@ def transfer(path, host, port, sdn_controller=None):
                         raise RuntimeError(f'Maximum retransmissions reached for packet {seq}')
                     sock.sendto(packet, addr)
                     outstanding[seq] = (packet, now, count + 1)
+                    emit_event('retransmit', seq=seq, attempt=count + 1, cumulative_ack=base, total=len(chunks))
                     retries += 1
                     retransmissions += 1
                     total_packets_sent += 1
@@ -99,6 +109,7 @@ def transfer(path, host, port, sdn_controller=None):
                 msg = decode(reply)
                 if msg and msg[1] == session and msg[0] == DONE:
                     elapsed = time.monotonic() - started
+                    emit_event('transfer_completed', size=size, sha256=digest.hex(), elapsed=elapsed, throughput_mbps=(size * 8 / elapsed / 1_000_000) if elapsed else 0, transmissions=total_packets_sent, retransmissions=retransmissions, acknowledged=len(chunks))
                     print(f'Transfer successful: {size} bytes in {elapsed:.3f}s')
                     print(f'SHA-256: {digest.hex()}')
                     throughput = (size * 8 / elapsed / 1_000_000) if elapsed else 0
