@@ -120,6 +120,12 @@ def start_api(net, host="0.0.0.0", port=8765):
                     return self.reply(200, {"status": "started"})
                 if self.path == "/experiment":
                     action = data.get("action")
+                    if action == "receiver_stop":
+                        proc = processes["receiver"]
+                        if proc and proc.poll() is None:
+                            proc.terminate()
+                            emit({"type": "receiver_state", "state": "stopped"})
+                        return self.reply(200, {"status": "stopped"})
                     if action == "link_down":
                         net.configLinkStatus("s1", "s2", "down")
                     elif action == "link_up":
