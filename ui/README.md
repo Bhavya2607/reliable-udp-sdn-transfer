@@ -1,44 +1,55 @@
 # Reliable UDP + SDN visual experiment dashboard
 
-The UI is a simple React/Vite dashboard with a FastAPI bridge around the existing UDP sender and receiver.
+The React dashboard runs in the browser on the Mac. The FastAPI backend and Mininet control API run inside the Ubuntu VM, so file uploads are stored on the VM and transfers execute in Mininet namespaces H1 and H2.
 
-## Run locally
+## Ubuntu VM (backend + Mininet)
 
-Backend terminal:
+Keep OS-Ken running in its own terminal:
 ```bash
-cd ui/backend
-python3 -m venv .venv
+cd ~/reliable-udp-sdn-transfer
+source .venv/bin/activate
+osken-manager controller.py --ofp-tcp-listen-port 6653
+```
+
+Stop the currently running Mininet CLI with `exit` (or Ctrl+C), update the feature branch, then start the topology again:
+```bash
+cd ~/reliable-udp-sdn-transfer
+git pull origin feature/visual-transfer-ui
+sudo python3 topology.py
+```
+
+The topology starts a small control API on port 8765 automatically. In another Ubuntu terminal, start the dashboard backend:
+```bash
+cd ~/reliable-udp-sdn-transfer/ui/backend
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-Frontend terminal:
+Find the Ubuntu VM IP:
 ```bash
-cd ui/frontend
-npm install
-npm run dev
+hostname -I
 ```
 
-Open http://localhost:5173. Upload a file, start the local receiver, then send to 127.0.0.1.
+Allow inbound TCP ports 8000 (dashboard API) and 8765 (Mininet control API, local to the VM only). Only port 8000 needs to be reachable from the Mac. Do not expose port 8765 to untrusted networks.
 
-## Dashboard sections
+## Mac (frontend)
 
-1. Four-switch Mininet diamond: H1-S1-(S2/S3)-S4-H2. The route highlight is based on the controller's reported path.
-2. File transfer: launches the existing client.py and server.py for localhost testing.
-3. Live progress: DATA sends, cumulative ACKs, retransmissions and acknowledged packet count.
-4. Sliding window: sequence numbers and waiting/sent/retransmitted/acknowledged states.
-5. Experiments: copy commands for link down/up, netem packet loss, delay, corruption and receiver stop/restart.
-6. Event log: structured sender and receiver events streamed through WebSocket.
+In the Mac terminal, inside your local repository's `ui/frontend`:
+```bash
+npm install
+VITE_API_URL=http://UBUNTU_VM_IP:8000 npm run dev -- --host 0.0.0.0
+```
 
-## Experiments
+Replace `UBUNTU_VM_IP` with the address returned by `hostname -I` in Ubuntu. Open the Vite URL on the Mac, usually http://localhost:5173. If the VM IP changes, update `VITE_API_URL` and restart Vite.
 
-Run the displayed commands in the Mininet CLI inside the Ubuntu VM after starting the controller and topology. The browser does not execute Mininet commands: the UI runs on the host while Mininet is isolated in the VM. Each experiment includes a recovery command.
+## What the dashboard controls
 
-## Network modes and limitations
+- File upload is sent to the Ubuntu backend and saved on the VM.
+- Start receiver launches `server.py` inside Mininet H2.
+- Send file launches `client.py` inside Mininet H1, targeting 10.0.0.2:5001.
+- Structured DATA, ACK, retransmission and integrity events are streamed from the real H1/H2 processes.
+- Topology path is read from the OS-Ken telemetry listener.
+- Experiment buttons directly apply link down/up and netem loss, delay, corruption, and reset actions to the live Mininet network.
 
-- Localhost mode starts both UDP processes from the FastAPI backend.
-- For two physical computers, run `python3 server.py` on the receiving computer, allow inbound UDP/5001, and enter its reachable LAN IP. The current dashboard's local receiver button starts a receiver on the backend host.
-- Mininet/OS-Ken is a separate virtual SDN experiment; it does not control the physical Wi-Fi/Ethernet route.
-- DATA and ACK animations are triggered by structured events printed by the actual sender and receiver. The sequence numbers and retransmission counts come from those processes, not random demo data.
-- Controller route highlighting is live only when the controller's UDP/9999 status listener can be reached from the backend host.
+The four-switch Mininet diamond is H1-S1-(S2/S3)-S4-H2. The UI does not claim that Mininet controls the Mac's physical Wi-Fi/Ethernet path; it visualizes and controls the isolated SDN lab topology.
