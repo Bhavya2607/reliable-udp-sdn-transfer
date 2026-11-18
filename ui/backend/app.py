@@ -8,7 +8,8 @@ app=FastAPI(title='Reliable UDP Transfer UI')
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:5173'],allow_methods=['*'],allow_headers=['*'])
 clients:Set[WebSocket]=set(); events=[]; receiver=None; sender=None; state={'receiver':'stopped','transfer':'idle'}
 async def publish(event):
-    events.append(event); del events[:-300] if len(events)>300 else events[:0]
+    events.append(event)
+    if len(events)>300: del events[:-300]
     for ws in list(clients):
         try: await ws.send_json(event)
         except Exception: clients.discard(ws)
