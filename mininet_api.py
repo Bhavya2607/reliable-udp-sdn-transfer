@@ -13,12 +13,15 @@ from urllib.parse import urlparse, parse_qs
 ROOT = Path(__file__).resolve().parent
 events = []
 lock = threading.Lock()
+next_event_id = 0
 processes = {"receiver": None, "sender": None}
 
 
 def emit(event):
+    global next_event_id
     with lock:
-        events.append({"id": len(events) + 1, "time": time.time(), **event})
+        next_event_id += 1
+        events.append({"id": next_event_id, "time": time.time(), **event})
         del events[:-500]
 
 
