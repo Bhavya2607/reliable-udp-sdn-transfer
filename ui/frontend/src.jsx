@@ -5,9 +5,9 @@ import'./style.css';
 const API=import.meta.env.VITE_API_URL||'http://localhost:8000'; const WS=API.replace(/^http/,'ws')+'/ws';
 const experiments=[
  {id:'fail',name:'Link failure',desc:'Break primary route S1–S2. Controller should move traffic through S3.',cmd:'link s1 s2 down',recover:'link s1 s2 up'},
- {id:'loss',name:'Packet loss',desc:'Drop 5% of packets on the sender link and observe retransmissions.',cmd:'h1 tc qdisc add dev h1-eth0 root netem loss 5%',recover:'h1 tc qdisc del dev h1-eth0 root'},
- {id:'delay',name:'Network delay',desc:'Add 100 ms delay to see ACK timing and sliding-window behaviour.',cmd:'h1 tc qdisc add dev h1-eth0 root netem delay 100ms',recover:'h1 tc qdisc del dev h1-eth0 root'},
- {id:'corrupt',name:'Packet corruption',desc:'Corrupt 2% of packets. Invalid CRC packets should be discarded and recovered by retransmission.',cmd:'h1 tc qdisc add dev h1-eth0 root netem corrupt 2%',recover:'h1 tc qdisc del dev h1-eth0 root'},
+ {id:'loss',name:'Packet loss',desc:'Drop 30% of packets on the sender link so retransmissions are easier to demonstrate.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem loss 30%',recover:'h1 tc qdisc del dev h1-eth0 root'},
+ {id:'delay',name:'Network delay',desc:'Add 100 ms delay to see ACK timing and sliding-window behaviour.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem delay 100ms',recover:'h1 tc qdisc del dev h1-eth0 root'},
+ {id:'corrupt',name:'Packet corruption',desc:'Corrupt 2% of packets. Invalid CRC packets should be discarded and recovered by retransmission.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem corrupt 2%',recover:'h1 tc qdisc del dev h1-eth0 root'},
  {id:'receiver',name:'Receiver failure',desc:'Stop the receiver process to demonstrate sender timeout and retry limit.',cmd:'h2 pkill -f server.py',recover:'h2 python3 server.py &'}
 ];
 function App(){
@@ -15,7 +15,7 @@ function App(){
  useEffect(()=>{const poll=()=>fetch(API+'/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});poll();const timer=setInterval(poll,1800);const ws=new WebSocket(WS);ws.onmessage=e=>{const v=JSON.parse(e.data);setEvents(old=>[...old,v].slice(-300));if(v.type==='transfer_state')setStatus(old=>({...old,transfer:v.state}));if(v.type==='receiver_state')setStatus(old=>({...old,receiver:v.state}));if(v.type==='data_sent'||v.type==='retransmit')setLastPacket(v);if(v.type==='ack_received'||v.type==='ack_sent')setLastAck(v);if(v.type==='transfer_completed')setError('');};return()=>{clearInterval(timer);ws.close()}},[]);
  async function upload(f){if(!f)return;const d=new FormData();d.append('file',f);const r=await fetch(API+'/api/upload',{method:'POST',body:d});const x=await r.json();if(!r.ok)return alert(x.detail);setFile({name:x.name,size:x.size});setPath(x.path)}
  async function post(url,body){const r=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok){setError(d.detail||d.error||'Request failed');return}setError('');return d;}
- async function runExperiment(recover=false){const action=experiment==='fail'?(recover?'link_up':'link_down'):experiment==='receiver'?(recover?'receiver_start':'receiver_stop'):(recover?'clear_netem':experiment);if(action==='receiver_start'){await post('/api/receiver/start');return;}await post('/api/experiment',{action});}
+ async function runExperiment(recover=false){const action=experiment==='fail'?(recover?'link_up':'link_down'):experiment==='receiver'?(recover?'receiver_start':'receiver_stop'):(recover?'clear_netem':experiment);try{if(action==='receiver_start'){await post('/api/receiver/start');return;}await post('/api/experiment',{action});}catch(e){setError('Experiment request failed: '+e.message);}}
  const exp=experiments.find(x=>x.id===experiment),ctl=status.controller||{},active=ctl.active_path||[];
  const packets=events.filter(e=>e.type==='data_sent'),acks=events.filter(e=>e.type==='ack_received'),retries=events.filter(e=>e.type==='retransmit');
  const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets??lastPacket?.total??0,base=events.filter(e=>e.type==='ack_received').at(-1)?.ack??0;
