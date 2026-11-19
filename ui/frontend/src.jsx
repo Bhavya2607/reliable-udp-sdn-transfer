@@ -5,7 +5,7 @@ import'./style.css';
 const API=import.meta.env.VITE_API_URL||'http://localhost:8000'; const WS=API.replace(/^http/,'ws')+'/ws';
 const experiments=[
  {id:'fail',name:'Link failure',desc:'Break primary route S1–S2. Controller should move traffic through S3.',cmd:'link s1 s2 down',recover:'link s1 s2 up'},
- {id:'loss',name:'Packet loss',desc:'Drop 30% of packets on the sender link so retransmissions are easier to demonstrate.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem loss 30%',recover:'h1 tc qdisc del dev h1-eth0 root'},
+ {id:'loss',name:'Packet loss',desc:'Drop 5% of packets on the sender link to demonstrate retransmission and recovery.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem loss 5%',recover:'h1 tc qdisc del dev h1-eth0 root'},
  {id:'delay',name:'Network delay',desc:'Add 100 ms delay to see ACK timing and sliding-window behaviour.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem delay 100ms',recover:'h1 tc qdisc del dev h1-eth0 root'},
  {id:'corrupt',name:'Packet corruption',desc:'Corrupt 2% of packets. Invalid CRC packets should be discarded and recovered by retransmission.',cmd:'h1 tc qdisc replace dev h1-eth0 root netem corrupt 2%',recover:'h1 tc qdisc del dev h1-eth0 root'},
  {id:'receiver',name:'Receiver failure',desc:'Stop the receiver process to demonstrate sender timeout and retry limit.',cmd:'h2 pkill -f server.py',recover:'h2 python3 server.py &'}
