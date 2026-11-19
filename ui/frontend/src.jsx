@@ -12,7 +12,37 @@ const experiments=[
 ];
 function App(){
  const[file,setFile]=useState(null),[path,setPath]=useState(''),[host,setHost]=useState('127.0.0.1'),[events,setEvents]=useState([]),[status,setStatus]=useState({receiver:'stopped',transfer:'idle',controller:{}}),[experiment,setExperiment]=useState('fail'),[lastPacket,setLastPacket]=useState(null),[lastAck,setLastAck]=useState(null),[error,setError]=useState(''),[copied,setCopied]=useState('');
- useEffect(()=>{const poll=()=>fetch(API+'/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});poll();const timer=setInterval(poll,1800);const ws=new WebSocket(WS);ws.onmessage=e=>{const v=JSON.parse(e.data);setEvents(old=>[...old,v].slice(-300));if(v.type==='transfer_state')setStatus(old=>({...old,transfer:v.state}));if(v.type==='receiver_state')setStatus(old=>({...old,receiver:v.state}));if(v.type==='data_sent'||v.type==='retransmit')setLastPacket(v);if(v.type==='ack_received'||v.type==='ack_sent')setLastAck(v);if(v.type==='transfer_completed')setError('');};return()=>{clearInterval(timer);ws.close()}},[]);
+ useEffect(()=>{
+  let alive=true,ws=null,retryTimer=null,retryDelay=1000;
+  const poll=()=>fetch(API+'/api/status').then(r=>r.json()).then(v=>{if(alive)setStatus(v)}).catch(()=>{});
+  poll();
+  const statusTimer=setInterval(poll,1500);
+  const connect=()=>{
+   if(!alive)return;
+   ws=new WebSocket(WS);
+   ws.onopen=()=>{retryDelay=1000;};
+   ws.onmessage=e=>{
+    let v;try{v=JSON.parse(e.data)}catch{return}
+    if(v.type==='transfer_started'){
+     setEvents([v]);setLastPacket(null);setLastAck(null);setError('');
+     setStatus(old=>({...old,transfer:'running'}));
+     return;
+    }
+    setEvents(old=>[...old,v].slice(-300));
+    if(v.type==='transfer_state')setStatus(old=>({...old,transfer:v.state}));
+    if(v.type==='receiver_state')setStatus(old=>({...old,receiver:v.state}));
+    if(v.type==='data_sent'||v.type==='retransmit')setLastPacket(v);
+    if(v.type==='ack_received'||v.type==='ack_sent')setLastAck(v);
+    if(v.type==='transfer_completed')setError('');
+    if(v.type==='process_exit'&&v.source==='sender'&&v.code!==0)
+     setError('Transfer process exited with code '+v.code+'. Check the event log for details.');
+   };
+   ws.onclose=()=>{if(alive){retryTimer=setTimeout(connect,retryDelay);retryDelay=Math.min(retryDelay*2,8000)}};
+   ws.onerror=()=>{try{ws.close()}catch{}};
+  };
+  connect();
+  return()=>{alive=false;clearInterval(statusTimer);clearTimeout(retryTimer);if(ws)ws.close()};
+ },[]);
  async function upload(f){if(!f)return;const d=new FormData();d.append('file',f);const r=await fetch(API+'/api/upload',{method:'POST',body:d});const x=await r.json();if(!r.ok)return alert(x.detail);setFile({name:x.name,size:x.size});setPath(x.path)}
  async function post(url,body){const r=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok){setError(d.detail||d.error||'Request failed');return}setError('');return d;}
  async function runExperiment(recover=false){const action=experiment==='fail'?(recover?'link_up':'link_down'):experiment==='receiver'?(recover?'receiver_start':'receiver_stop'):(recover?'clear_netem':experiment);try{if(action==='receiver_start'){await post('/api/receiver/start');return;}await post('/api/experiment',{action});}catch(e){setError('Experiment request failed: '+e.message);}}
