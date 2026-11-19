@@ -62,13 +62,11 @@ def transfer(path, host, port, sdn_controller=None):
             try:
                 reply, _ = sock.recvfrom(2048)
                 msg = decode(reply)
-                if not msg or msg[1] != session:
-                    continue
-                kind, _, ack_next, _ = msg
-                if kind == ERROR:
-                    raise RuntimeError('Server rejected a packet')
-                if kind == ACK:
-                    if base <= ack_next <= next_seq:
+                if msg and msg[1] == session:
+                    kind, _, ack_next, _ = msg
+                    if kind == ERROR:
+                        raise RuntimeError('Server rejected a packet')
+                    if kind == ACK and base <= ack_next <= next_seq:
                         for seq in range(base, ack_next):
                             outstanding.pop(seq, None)
                         old_base = base
@@ -76,10 +74,14 @@ def transfer(path, host, port, sdn_controller=None):
                         emit_event('ack_received', ack=ack_next, previous_base=old_base, base=base, outstanding=len(outstanding), total=len(chunks))
                         retries = 0
             except socket.timeout:
-                now = time.monotonic()
-                expired = [seq for seq, (_, sent, _) in outstanding.items() if now - sent >= TIMEOUT]
-                if not expired:
-                    continue
+                pass
+
+            # Check packet deadlines after EVERY receive, not only socket timeouts.
+            # Duplicate cumulative ACKs can arrive continuously while a gap remains,
+            # otherwise preventing socket.timeout and deadlocking the sliding window.
+            now = time.monotonic()
+            expired = [seq for seq, (_, sent, _) in outstanding.items() if now - sent >= TIMEOUT]
+            if expired:
                 for seq in expired:
                     packet, _, count = outstanding[seq]
                     if count >= MAX_RETRIES:
@@ -92,7 +94,6 @@ def transfer(path, host, port, sdn_controller=None):
                     total_packets_sent += 1
                 if control:
                     try:
-                        import json
                         control.sendto(json.dumps({'event': 'transfer_stall', 'session': session.hex(), 'base': base, 'expired': expired, 'timestamp': time.time()}).encode(), control_addr)
                         control.sendto(b'{"event":"status"}', control_addr)
                         status, _ = control.recvfrom(2048)
