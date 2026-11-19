@@ -11,7 +11,7 @@ const experiments=[
  {id:'receiver',name:'Receiver failure',desc:'Stop the receiver process to demonstrate sender timeout and retry limit.',cmd:'h2 pkill -f server.py',recover:'h2 python3 server.py &'}
 ];
 function App(){
- const[file,setFile]=useState(null),[path,setPath]=useState(''),[host,setHost]=useState('127.0.0.1'),[events,setEvents]=useState([]),[status,setStatus]=useState({receiver:'stopped',transfer:'idle',controller:{}}),[experiment,setExperiment]=useState('fail'),[lastPacket,setLastPacket]=useState(null),[lastAck,setLastAck]=useState(null),[error,setError]=useState(''),[copied,setCopied]=useState('');
+ const[file,setFile]=useState(null),[path,setPath]=useState(''),[host,setHost]=useState('127.0.0.1'),[events,setEvents]=useState([]),[status,setStatus]=useState({receiver:'stopped',transfer:'idle',controller:{}}),[experiment,setExperiment]=useState('fail'),[lastPacket,setLastPacket]=useState(null),[lastAck,setLastAck]=useState(null),[error,setError]=useState(''),[copied,setCopied]=useState(''),[counts,setCounts]=useState({sent:0,acks:0,retries:0});
  useEffect(()=>{
   let alive=true,ws=null,retryTimer=null,retryDelay=1000;
   const poll=()=>fetch(API+'/api/status').then(r=>r.json()).then(v=>{if(alive)setStatus(v)}).catch(()=>{});
@@ -24,12 +24,12 @@ function App(){
    ws.onmessage=e=>{
     let v;try{v=JSON.parse(e.data)}catch{return}
     if(v.type==='transfer_reset'){
-     setEvents([]);setLastPacket(null);setLastAck(null);setError('');
+     setEvents([]);setLastPacket(null);setLastAck(null);setCounts({sent:0,acks:0,retries:0});setError('');
      setStatus(old=>({...old,transfer:'running'}));
      return;
     }
     if(v.type==='transfer_started'){
-     setEvents([v]);setLastPacket(null);setLastAck(null);setError('');
+     setEvents([v]);setLastPacket(null);setLastAck(null);setCounts({sent:0,acks:0,retries:0});setError('');
      setStatus(old=>({...old,transfer:'running'}));
      return;
     }
@@ -38,6 +38,9 @@ function App(){
      return;
     }
     setEvents(old=>[...old,v].slice(-300));
+    if(v.type==='data_sent')setCounts(old=>({...old,sent:old.sent+1}));
+    if(v.type==='ack_received')setCounts(old=>({...old,acks:old.acks+1}));
+    if(v.type==='retransmit')setCounts(old=>({...old,retries:old.retries+1}));
     if(v.type==='transfer_state')setStatus(old=>({...old,transfer:v.state}));
     if(v.type==='receiver_state')setStatus(old=>({...old,receiver:v.state}));
     if(v.type==='data_sent'||v.type==='retransmit')setLastPacket(v);
@@ -58,6 +61,7 @@ function App(){
    if(!r.ok)throw new Error(d.detail||'Could not refresh transfer events');
    const list=d.events||[];
    setEvents(list.slice(-300));
+   setCounts({sent:list.filter(e=>e.type==='data_sent').length,acks:list.filter(e=>e.type==='ack_received').length,retries:list.filter(e=>e.type==='retransmit').length});
    const data=[...list].reverse().find(e=>e.type==='data_sent'||e.type==='retransmit');
    const ack=[...list].reverse().find(e=>e.type==='ack_received');
    setLastPacket(data||null);setLastAck(ack||null);setError('');
@@ -67,7 +71,7 @@ function App(){
  async function post(url,body){const r=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok){setError(d.detail||d.error||'Request failed');return}setError('');return d;}
  async function runExperiment(recover=false){const action=experiment==='fail'?(recover?'link_up':'link_down'):experiment==='receiver'?(recover?'receiver_start':'receiver_stop'):(recover?'clear_netem':experiment);try{if(action==='receiver_start'){await post('/api/receiver/start');return;}await post('/api/experiment',{action});}catch(e){setError('Experiment request failed: '+e.message);}}
  const exp=experiments.find(x=>x.id===experiment),ctl=status.controller||{},active=ctl.active_path||[];
- const packets=events.filter(e=>e.type==='data_sent'),acks=events.filter(e=>e.type==='ack_received'),retries=events.filter(e=>e.type==='retransmit');
+ const retries=events.filter(e=>e.type==='retransmit');
  const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets??lastPacket?.total??0,base=events.filter(e=>e.type==='ack_received').at(-1)?.ack??0;
  
  const activeNodes=ctl.reachable?['h1',...active.map(n=>'s'+n),'h2']:[]; const pathActive=(a,b)=>activeNodes.some((n,i)=>(n===a&&activeNodes[i+1]===b)||(n===b&&activeNodes[i+1]===a));
@@ -97,7 +101,7 @@ function App(){
  </article>
  <article className="panel"><div className="sectionTitle"><div><b>3. Transfer progress</b><p>Live values from sender events</p></div><div className="btns"><button onClick={refreshProgress}><RefreshCw size={14}/> Refresh progress</button><Activity/></div></div>
  <div className="progress"><div className="progressText"><b>{base} / {total||'—'}</b><span>Packets cumulatively acknowledged</span></div><div className="bar"><i style={{width:(total?Math.min(100,base/total*100):0)+'%'}}/></div></div>
- <div className="stats"><div><b>{packets.length}</b><small>DATA sent</small></div><div><b>{acks.length}</b><small>ACK received</small></div><div><b>{retries.length}</b><small>Retransmits</small></div></div>
+ <div className="stats"><div><b>{counts.sent}</b><small>DATA sent</small></div><div><b>{counts.acks}</b><small>ACK received</small></div><div><b>{counts.retries}</b><small>Retransmits</small></div></div>
  <div className="packetNow"><div><ArrowUp/><span>Last DATA</span><b>{lastPacket?'seq '+lastPacket.seq:'—'}</b></div><div><ArrowDown/><span>Last ACK</span><b>{lastAck?'ACK '+(events.filter(e=>e.type==='ack_received').at(-1)?.ack??lastAck.ack):'—'}</b></div></div>
  </article></section>
  <section className="panel packets"><div className="sectionTitle"><div><b>4. Sliding window & packet timeline</b><p>Watch sequence numbers move through the sender window</p></div><span className="smalltag">WINDOW SIZE · 32</span></div>
