@@ -72,6 +72,19 @@ async def start_transfer(data: dict):
     return result
 
 
+@app.get("/api/events")
+async def transfer_events():
+    try:
+        batch = await asyncio.to_thread(mininet_request, "/events?since=0")
+        items = batch.get("events", [])
+        starts = [i for i, event in enumerate(items) if event.get("type") == "transfer_started"]
+        if starts:
+            items = items[starts[-1]:]
+        return {"events": items, "gap": batch.get("gap", False)}
+    except HTTPException:
+        raise
+
+
 @app.post("/api/experiment")
 async def experiment(data: dict):
     return mininet_request("/experiment", data)
