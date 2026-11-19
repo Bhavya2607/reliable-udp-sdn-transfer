@@ -23,9 +23,18 @@ function App(){
    ws.onopen=()=>{retryDelay=1000;};
    ws.onmessage=e=>{
     let v;try{v=JSON.parse(e.data)}catch{return}
+    if(v.type==='transfer_reset'){
+     setEvents([]);setLastPacket(null);setLastAck(null);setError('');
+     setStatus(old=>({...old,transfer:'running'}));
+     return;
+    }
     if(v.type==='transfer_started'){
      setEvents([v]);setLastPacket(null);setLastAck(null);setError('');
      setStatus(old=>({...old,transfer:'running'}));
+     return;
+    }
+    if(v.type==='event_gap'){
+     refreshProgress();
      return;
     }
     setEvents(old=>[...old,v].slice(-300));
@@ -43,6 +52,17 @@ function App(){
   connect();
   return()=>{alive=false;clearInterval(statusTimer);clearTimeout(retryTimer);if(ws)ws.close()};
  },[]);
+ async function refreshProgress(){
+  try{
+   const r=await fetch(API+'/api/events');const d=await r.json();
+   if(!r.ok)throw new Error(d.detail||'Could not refresh transfer events');
+   const list=d.events||[];
+   setEvents(list.slice(-300));
+   const data=[...list].reverse().find(e=>e.type==='data_sent'||e.type==='retransmit');
+   const ack=[...list].reverse().find(e=>e.type==='ack_received');
+   setLastPacket(data||null);setLastAck(ack||null);setError('');
+  }catch(e){setError('Progress refresh failed: '+e.message)}
+ }
  async function upload(f){if(!f)return;const d=new FormData();d.append('file',f);const r=await fetch(API+'/api/upload',{method:'POST',body:d});const x=await r.json();if(!r.ok)return alert(x.detail);setFile({name:x.name,size:x.size});setPath(x.path)}
  async function post(url,body){const r=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok){setError(d.detail||d.error||'Request failed');return}setError('');return d;}
  async function runExperiment(recover=false){const action=experiment==='fail'?(recover?'link_up':'link_down'):experiment==='receiver'?(recover?'receiver_start':'receiver_stop'):(recover?'clear_netem':experiment);try{if(action==='receiver_start'){await post('/api/receiver/start');return;}await post('/api/experiment',{action});}catch(e){setError('Experiment request failed: '+e.message);}}
@@ -75,7 +95,7 @@ function App(){
  <div className="btns"><button onClick={()=>post('/api/receiver/start')}><Server size={16}/> Start H2 receiver</button><button className="primary" disabled={!path||status.transfer==='running'} onClick={()=>post('/api/transfer/start',{path,host,port:5001})}><Play size={16}/> Send file</button></div>
  {error&&<p className="error">{error}</p>}<p className="tip">Mininet destination: 10.0.0.2. This dashboard sends through the live Mininet H1 → H2 topology.</p>
  </article>
- <article className="panel"><div className="sectionTitle"><div><b>3. Transfer progress</b><p>Live values from sender events</p></div><Activity/></div>
+ <article className="panel"><div className="sectionTitle"><div><b>3. Transfer progress</b><p>Live values from sender events</p></div><div className="btns"><button onClick={refreshProgress}><RefreshCw size={14}/> Refresh progress</button><Activity/></div></div>
  <div className="progress"><div className="progressText"><b>{base} / {total||'—'}</b><span>Packets cumulatively acknowledged</span></div><div className="bar"><i style={{width:(total?Math.min(100,base/total*100):0)+'%'}}/></div></div>
  <div className="stats"><div><b>{packets.length}</b><small>DATA sent</small></div><div><b>{acks.length}</b><small>ACK received</small></div><div><b>{retries.length}</b><small>Retransmits</small></div></div>
  <div className="packetNow"><div><ArrowUp/><span>Last DATA</span><b>{lastPacket?'seq '+lastPacket.seq:'—'}</b></div><div><ArrowDown/><span>Last ACK</span><b>{lastAck?'ACK '+(events.filter(e=>e.type==='ack_received').at(-1)?.ack??lastAck.ack):'—'}</b></div></div>
