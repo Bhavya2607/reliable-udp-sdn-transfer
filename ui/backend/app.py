@@ -33,7 +33,12 @@ async def status():
     try:
         remote = mininet_request("/status")
         state["receiver"] = "running" if remote["receiver"] else "stopped"
-        state["transfer"] = "running" if remote["transfer"] else state["transfer"]
+        if remote["transfer"]:
+            state["transfer"] = "running"
+        elif state["transfer"] == "running":
+            # The sender process has exited; do not leave the UI's Send button disabled
+            # if a WebSocket completion event was missed.
+            state["transfer"] = "idle"
         return {**state, "controller": {"reachable": True, "active_path": remote.get("active_path", []), "down_ports": []}, "mininet": True}
     except HTTPException:
         return {**state, "controller": {"reachable": False, "active_path": [], "down_ports": []}, "mininet": False}
