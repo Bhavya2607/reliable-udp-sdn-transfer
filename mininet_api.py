@@ -118,9 +118,11 @@ def start_api(net, host="0.0.0.0", port=8765):
                         ["python3", str(ROOT / "client.py"), str(file_path), "10.0.0.2"],
                         stdout=-1, stderr=-2, text=True, bufsize=1)
                     processes["sender"] = proc
-                    threading.Thread(target=read_process, args=(proc, "sender"), daemon=True).start()
+                    # Publish the new session boundary before its reader can emit
+                    # transfer_started or packet events.
                     emit({"type": "transfer_reset", "state": "running"})
                     emit({"type": "transfer_state", "state": "running"})
+                    threading.Thread(target=read_process, args=(proc, "sender"), daemon=True).start()
                     return self.reply(200, {"status": "started"})
                 if self.path == "/experiment":
                     action = data.get("action")
