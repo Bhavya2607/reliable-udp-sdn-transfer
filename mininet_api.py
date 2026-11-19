@@ -132,13 +132,21 @@ def start_api(net, host="0.0.0.0", port=8765):
                         net.configLinkStatus("s1", "s2", "up")
                     elif action in ("loss", "delay", "corrupt", "clear_netem"):
                         command = {
-                            "loss": "tc qdisc replace dev h1-eth0 root netem loss 5%",
+                            "loss": "tc qdisc replace dev h1-eth0 root netem loss 30%",
                             "delay": "tc qdisc replace dev h1-eth0 root netem delay 100ms",
                             "corrupt": "tc qdisc replace dev h1-eth0 root netem corrupt 2%",
                             "clear_netem": "tc qdisc del dev h1-eth0 root 2>/dev/null || true",
                         }[action]
-                        output = net.get("h1").cmd(command)
-                        emit({"type": "experiment", "action": action, "output": output.strip()})
+                        h1 = net.get("h1")
+                        output = h1.cmd(command)
+                        qdisc = h1.cmd("tc qdisc show dev h1-eth0").strip()
+                        if action != "clear_netem" and "netem" not in qdisc:
+                            emit({"type": "experiment", "action": action, "status": "failed",
+                                  "output": output.strip(), "qdisc": qdisc})
+                            return self.reply(500, {"error": "tc netem was not installed on h1-eth0",
+                                                    "output": output.strip(), "qdisc": qdisc})
+                        emit({"type": "experiment", "action": action, "status": "applied",
+                              "output": output.strip(), "qdisc": qdisc})
                     else:
                         return self.reply(400, {"error": "unknown experiment"})
                     return self.reply(200, {"status": "applied", "action": action})
