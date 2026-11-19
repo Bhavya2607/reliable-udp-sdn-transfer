@@ -82,8 +82,11 @@ def start_api(net, host="0.0.0.0", port=8765):
             elif parsed.path == "/events":
                 since = int(parse_qs(parsed.query).get("since", ["0"])[0])
                 with lock:
+                    oldest_id = events[0]["id"] if events else since + 1
+                    last_id = events[-1]["id"] if events else since
                     batch = [e for e in events if e["id"] > since]
-                self.reply(200, {"events": batch, "last_id": events[-1]["id"] if events else since})
+                self.reply(200, {"events": batch, "oldest_id": oldest_id,
+                                 "last_id": last_id, "gap": since < oldest_id - 1})
             else:
                 self.reply(404, {"error": "not found"})
 
@@ -116,6 +119,7 @@ def start_api(net, host="0.0.0.0", port=8765):
                         stdout=-1, stderr=-2, text=True, bufsize=1)
                     processes["sender"] = proc
                     threading.Thread(target=read_process, args=(proc, "sender"), daemon=True).start()
+                    emit({"type": "transfer_reset", "state": "running"})
                     emit({"type": "transfer_state", "state": "running"})
                     return self.reply(200, {"status": "started"})
                 if self.path == "/experiment":
