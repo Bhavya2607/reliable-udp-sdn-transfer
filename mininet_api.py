@@ -141,7 +141,7 @@ def start_api(net, host="0.0.0.0", port=8765):
                         net.configLinkStatus("s1", "s2", "up")
                     elif action in ("loss", "delay", "corrupt", "clear_netem"):
                         command = {
-                            "loss": "tc qdisc replace dev h1-eth0 root netem loss 30%",
+                            "loss": "tc qdisc replace dev h1-eth0 root netem loss 5%",
                             "delay": "tc qdisc replace dev h1-eth0 root netem delay 100ms",
                             "corrupt": "tc qdisc replace dev h1-eth0 root netem corrupt 2%",
                             "clear_netem": "tc qdisc del dev h1-eth0 root 2>/dev/null || true",
