@@ -79,24 +79,32 @@ async def experiment(data: dict):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    global last_event_id
     await ws.accept()
-    clients.add(ws)
-    cursor = 0
     try:
+        try:
+            cursor = max(0, int(ws.query_params.get("since", "0")))
+        except ValueError:
+            cursor = 0
         while True:
             try:
-                req = urllib.request.urlopen(MININET_API + f"/events?since={cursor}", timeout=1)
-                batch = json.loads(req.read())
+                # Keep blocking urllib I/O off the asyncio event loop so status,
+                # uploads and other WebSocket work remain responsive.
+                batch = await asyncio.to_thread(mininet_request, f"/events?since={cursor}")
+                if batch.get("gap"):
+                    await ws.send_json({"type": "event_gap", "oldest_id": batch.get("oldest_id"),
+                                        "last_id": batch.get("last_id")})
                 for event in batch.get("events", []):
-                    cursor = max(cursor, event["id"])
+                    cursor = max(cursor, int(event["id"]))
                     await ws.send_json(event)
                     if event.get("type") == "transfer_state":
                         state["transfer"] = event.get("state", state["transfer"])
-                    if event.get("type") == "receiver_state":
+                    elif event.get("type") == "receiver_state":
                         state["receiver"] = event.get("state", state["receiver"])
-            except Exception:
-                await ws.send_json({"type": "connection", "state": "mininet_api_unavailable"})
-            await asyncio.sleep(0.35)
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                await ws.send_json({"type": "connection", "state": "mininet_api_unavailable",
+                                    "message": str(exc)})
+            await asyncio.sleep(0.2)
     except WebSocketDisconnect:
-        clients.discard(ws)
+        pass
