@@ -20,7 +20,7 @@ function App(){
  const packets=events.filter(e=>e.type==='data_sent'),acks=events.filter(e=>e.type==='ack_received'),retries=events.filter(e=>e.type==='retransmit');
  const latest=events.filter(e=>e.type==='transfer_started').at(-1),total=latest?.total_packets??lastPacket?.total??0,base=events.filter(e=>e.type==='ack_received').at(-1)?.ack??0;
  
- const switchId=(node)=>node==='h1'?1:node==='h2'?4:Number(node.slice(1)); const pathActive=(a,b)=>ctl.reachable&&active.includes(switchId(a))&&active.includes(switchId(b));
+ const activeNodes=ctl.reachable?['h1',...active.map(n=>'s'+n),'h2']:[]; const pathActive=(a,b)=>activeNodes.some((n,i)=>(n===a&&activeNodes[i+1]===b)||(n===b&&activeNodes[i+1]===a));
  const coords={1:[245,150],2:[430,70],3:[430,230],4:[620,150]}; const routePoints=active.length?[[90,150],...active.map(n=>coords[n]),[800,150]]:[[90,150],[245,150],[430,70],[620,150],[800,150]]; const routeD=routePoints.map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' '); const reverseD=[...routePoints].reverse().map((p,i)=>(i?'L':'M')+p[0]+','+p[1]).join(' ');
  const node=(id,x,y,label,sub)=> <g key={id} transform={'translate('+x+' '+y+')'}><rect x="-43" y="-24" width="86" height="48" rx="9" className={id[0]==='h'?'host':'sw'}/><text y="-2" textAnchor="middle" className="nt">{label}</text><text y="12" textAnchor="middle" className="ns">{sub}</text></g>;
  const link=(a,b,x1,y1,x2,y2)=>{const hot=pathActive(a,b);return <g key={a+b}><line x1={x1} y1={y1} x2={x2} y2={y2} className={'edge '+(hot?'hot':'')}/>{hot&&<circle r="5" className="moving"><animateMotion dur="1.6s" repeatCount="indefinite" path={'M'+x1+','+y1+' L'+x2+','+y2}/></circle>}</g>};
@@ -33,8 +33,8 @@ function App(){
  <div className="diagram"><svg viewBox="0 0 900 300" aria-label="Four switch diamond network">
  {link('h1','s1',90,150,245,150)}{link('s1','s2',245,150,430,70)}{link('s1','s3',245,150,430,230)}{link('s2','s4',430,70,620,150)}{link('s3','s4',430,230,620,150)}{link('s4','h2',620,150,800,150)}
  {node('h1',90,150,'SENDER','H1 · 10.0.0.1')}{node('s1',245,150,'S1','switch 1')}{node('s2',430,70,'S2','primary path')}{node('s3',430,230,'S3','backup path')}{node('s4',620,150,'S4','switch 4')}{node('h2',800,150,'RECEIVER','H2 · 10.0.0.2')}
- {lastPacket&&<circle key={'data-'+events.length} r="7" className="dataDot"><animateMotion dur="1.1s" repeatCount="1" path={routeD}/></circle>}
- {lastAck&&<circle key={'ack-'+events.length} r="7" className="ackDot"><animateMotion dur="1.1s" repeatCount="1" path={reverseD}/></circle>}
+ {lastPacket&&<circle key={'data-'+events.length+'-'+active.join('-')} r="7" className="dataDot"><animateMotion dur="1.1s" repeatCount="1" path={routeD}/></circle>}
+ {lastAck&&<circle key={'ack-'+events.length+'-'+active.join('-')} r="7" className="ackDot"><animateMotion dur="1.1s" repeatCount="1" path={reverseD}/></circle>}
  </svg></div>
  <div className="legend"><span><i className="dataKey"/> DATA →</span><span><i className="ackKey"/> ← ACK</span><span><i className="routeKey"/> Controller active route</span><span className="routeText">{ctl.reachable?'Active path: '+(active.join(' → ')||'No path'):'Waiting for controller status'}</span></div>
  </section>
